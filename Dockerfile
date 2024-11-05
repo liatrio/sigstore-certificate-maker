@@ -1,11 +1,8 @@
-FROM scratch
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN go build -o sigstore-certificate-maker
 
-ARG BIN_PATH=go-template
-
-ARG UID=10001
-USER ${UID}
-
-COPY --chmod=755 ${BIN_PATH} /usr/bin/go-template
-
-
-ENTRYPOINT ["/usr/bin/go-template"]
+FROM alpine:latest
+COPY --from=builder /app/sigstore-certificate-maker /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/sigstore-certificate-maker"]
