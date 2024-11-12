@@ -88,7 +88,7 @@ func TestParseTemplate(t *testing.T) {
 		}
 	}`
 
-	err = os.WriteFile(tmpFile.Name(), []byte(templateContent), 0644)
+	err = os.WriteFile(tmpFile.Name(), []byte(templateContent), 0600)
 	require.NoError(t, err)
 
 	tmpl, err := parseTemplate(tmpFile.Name(), nil)
@@ -252,10 +252,10 @@ func testCertificateCreation(t *testing.T, tmpDir, rootContent, intermediateCont
 	rootTmplPath := filepath.Join(tmpDir, "root-template.json")
 	intermediateTmplPath := filepath.Join(tmpDir, "intermediate-template.json")
 
-	err := os.WriteFile(rootTmplPath, []byte(rootContent), 0644)
+	err := os.WriteFile(rootTmplPath, []byte(rootContent), 0600)
 	require.NoError(t, err)
 
-	err = os.WriteFile(intermediateTmplPath, []byte(intermediateContent), 0644)
+	err = os.WriteFile(intermediateTmplPath, []byte(intermediateContent), 0600)
 	require.NoError(t, err)
 
 	km := newMockKMS()
