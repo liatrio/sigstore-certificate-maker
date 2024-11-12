@@ -260,9 +260,3 @@ The tool uses the following precedence order for configuration:
 1. Command-line flags (highest priority)
 2. Environment variables
 3. Default values (lowest priority)
-
-## References
-
-- [Fulcio Issue #1178](https://github.com/sigstore/fulcio/issues/1178)
-- [Scaffolding Issue #1334](https://github.com/sigstore/scaffolding/issues/1334)
-- [Helm Charts Issue #863](https://github.com/sigstore/helm-charts/issues/863)
