@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"go.step.sm/crypto/kms/apiv1"
 	"go.step.sm/crypto/kms/awskms"
+	"go.step.sm/crypto/kms/azurekms"
+	"go.step.sm/crypto/kms/cloudkms"
 	"go.step.sm/crypto/x509util"
 	"go.uber.org/zap"
 )
@@ -46,12 +49,35 @@ func init() {
 	logger = zap.Must(cfg.Build())
 }
 
-func initKMS(ctx context.Context, region, keyID string) (apiv1.KeyManager, error) {
-	opts := apiv1.Options{
-		Type: "awskms",
-		URI:  fmt.Sprintf("awskms:///%s?region=%s", keyID, region),
+func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
+	if err := validateKMSConfig(config); err != nil {
+		return nil, fmt.Errorf("invalid KMS configuration: %w", err)
 	}
-	return awskms.New(ctx, opts)
+
+	opts := apiv1.Options{
+		Type: apiv1.Type(config.Type),
+		URI:  "",
+	}
+
+	switch config.Type {
+	case "awskms":
+		opts.URI = fmt.Sprintf("awskms:///%s?region=%s", config.KeyID, config.Region)
+		return awskms.New(ctx, opts)
+	case "cloudkms":
+		opts.URI = fmt.Sprintf("cloudkms:%s", config.KeyID)
+		if credFile, ok := config.Options["credentials-file"]; ok {
+			opts.URI += fmt.Sprintf("?credentials-file=%s", credFile)
+		}
+		return cloudkms.New(ctx, opts)
+	case "azurekms":
+		opts.URI = fmt.Sprintf("azurekms:///%s?vault-name=%s&tenant-id=%s",
+			config.KeyID,
+			config.Options["vault-name"],
+			config.Options["tenant-id"])
+		return azurekms.New(ctx, opts)
+	default:
+		return nil, fmt.Errorf("unsupported KMS type: %s", config.Type)
+	}
 }
 
 // createCertificates generates a certificate chain using AWS KMS
@@ -241,14 +267,52 @@ func parseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate
 
 type Config struct {
 	KMS struct {
-		Region   string `json:"region"`
-		KeyAlias string `json:"keyAlias"`
+		Type    string            `json:"type"`
+		Region  string            `json:"region"`
+		KeyID   string            `json:"keyId"`
+		Options map[string]string `json:"options,omitempty"`
 	} `json:"kms"`
 	Certificates struct {
 		ValidityYears int    `json:"validityYears"`
 		RootPath      string `json:"rootPath"`
 		IntermPath    string `json:"intermediatePath"`
 	} `json:"certificates"`
+}
+
+type KMSConfig struct {
+	Type    string            // "awskms", "cloudkms", "azurekms"
+	Region  string            // AWS region or Cloud location
+	KeyID   string            // Key identifier
+	Options map[string]string // Provider-specific options
+}
+
+func validateKMSConfig(config KMSConfig) error {
+	if config.Type == "" {
+		return fmt.Errorf("KMS type cannot be empty")
+	}
+	if config.KeyID == "" {
+		return fmt.Errorf("KeyID cannot be empty")
+	}
+
+	switch config.Type {
+	case "awskms":
+		if config.Region == "" {
+			return fmt.Errorf("region is required for AWS KMS")
+		}
+	case "cloudkms":
+		if !strings.HasPrefix(config.KeyID, "projects/") {
+			return fmt.Errorf("cloudkms KeyID must start with 'projects/'")
+		}
+	case "azurekms":
+		if config.Options["vault-name"] == "" {
+			return fmt.Errorf("vault-name is required for Azure KMS")
+		}
+		if config.Options["tenant-id"] == "" {
+			return fmt.Errorf("tenant-id is required for Azure KMS")
+		}
+	}
+
+	return nil
 }
 
 func main() {
@@ -262,17 +326,27 @@ func main() {
 		intermediateTemplate = os.Args[2]
 	}
 
-	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = "us-east-1"
+	// Load KMS configuration from environment or config file
+	kmsConfig := KMSConfig{
+		Type:    os.Getenv("KMS_TYPE"),
+		Region:  os.Getenv("KMS_REGION"),
+		KeyID:   os.Getenv("KMS_KEY_ID"),
+		Options: map[string]string{},
 	}
-	keyAlias := os.Getenv("AWS_KMS_KEY_ALIAS")
-	if keyAlias == "" {
-		keyAlias = "alias/fulcio-key"
+
+	// Set defaults if not provided
+	if kmsConfig.Type == "" {
+		kmsConfig.Type = "awskms" // Default to AWS KMS for backward compatibility
+	}
+	if kmsConfig.Region == "" {
+		kmsConfig.Region = "us-east-1"
+	}
+	if kmsConfig.KeyID == "" {
+		kmsConfig.KeyID = "alias/fulcio-key"
 	}
 
 	ctx := context.Background()
-	km, err := initKMS(ctx, region, keyAlias)
+	km, err := initKMS(ctx, kmsConfig)
 	if err != nil {
 		logger.Fatal("Failed to initialize KMS", zap.Error(err))
 	}
