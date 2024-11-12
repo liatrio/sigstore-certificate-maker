@@ -1,8 +1,8 @@
-module github.com/liatrio/go-template/internal/tools
+module github.com/liatrio/sigstore-certificate-maker/internal/tools
 
-go 1.22
+go 1.23
 
-toolchain go1.22.4
+toolchain go1.23.3
 
 require (
 	github.com/golangci/golangci-lint v1.59.1

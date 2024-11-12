@@ -1,20 +1,16 @@
+// Package main provides certificate creation utilities for Sigstore services
 package main
 
 import (
 	"context"
-	"fmt"
-	"math/big"
-	"time"
-
 	"crypto/x509"
 	"crypto/x509/pkix"
-
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"math/big"
 	"os"
-
-	"bytes"
-	"text/template"
+	"time"
 
 	"go.step.sm/crypto/kms/apiv1"
 	"go.step.sm/crypto/kms/awskms"
@@ -58,53 +54,15 @@ func initKMS(ctx context.Context, region, keyID string) (apiv1.KeyManager, error
 	return awskms.New(ctx, opts)
 }
 
-type CertificateTemplate struct {
-	Subject          pkix.Name              `json:"subject"`
-	Issuer           pkix.Name              `json:"issuer"`
-	KeyUsage         []string               `json:"keyUsage"`
-	ExtKeyUsage      []string               `json:"extKeyUsage,omitempty"`
-	BasicConstraints *BasicConstraints      `json:"basicConstraints"`
-	Extensions       []CertificateExtension `json:"extensions,omitempty"`
-}
-
-type BasicConstraints struct {
-	IsCA       bool `json:"isCA"`
-	MaxPathLen int  `json:"maxPathLen"`
-}
-
-type CertificateExtension struct {
-	ID       string `json:"id"`
-	Critical bool   `json:"critical"`
-	Value    string `json:"value"`
-}
-
-func parseTemplate(templatePath string, data interface{}) (*CertificateTemplate, error) {
-	tmpl, err := template.ParseFiles(templatePath)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing template: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, fmt.Errorf("error executing template: %w", err)
-	}
-
-	var certTemplate CertificateTemplate
-	if err := json.Unmarshal(buf.Bytes(), &certTemplate); err != nil {
-		return nil, fmt.Errorf("error unmarshaling template: %w", err)
-	}
-
-	return &certTemplate, nil
-}
-
+// createCertificates generates a certificate chain using AWS KMS
 func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTemplatePath string) error {
-	// Parse root template
+	// Parse templates
 	rootTmpl, err := parseTemplate(rootTemplatePath, nil)
 	if err != nil {
 		return fmt.Errorf("error parsing root template: %w", err)
 	}
 
-	// Create root key and signer
+	// Generate root key pair
 	rootKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
 		Name:               "root-key",
 		SignatureAlgorithm: apiv1.ECDSAWithSHA256,
@@ -120,36 +78,16 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error creating root signer: %w", err)
 	}
 
-	// Create root certificate template
-	rootTemplate := &x509.Certificate{
-		Subject:               rootTmpl.Subject,
-		SerialNumber:          big.NewInt(1),
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(100, 0, 0),
-		BasicConstraintsValid: true,
-		IsCA:                  rootTmpl.BasicConstraints.IsCA,
-		MaxPathLen:            rootTmpl.BasicConstraints.MaxPathLen,
-	}
-
-	// Set key usage
-	for _, usage := range rootTmpl.KeyUsage {
-		switch usage {
-		case "certSign":
-			rootTemplate.KeyUsage |= x509.KeyUsageCertSign
-		case "crlSign":
-			rootTemplate.KeyUsage |= x509.KeyUsageCRLSign
-		}
-	}
-
 	// Create root certificate
-	rootCert, err := x509util.CreateCertificate(rootTemplate, rootTemplate, rootSigner.Public(), rootSigner)
+	rootCert, err := x509util.CreateCertificate(rootTmpl, rootTmpl, rootSigner.Public(), rootSigner)
 	if err != nil {
 		return fmt.Errorf("error creating root certificate: %w", err)
 	}
 
-	intermediateSubject := &pkix.Name{
-		CommonName:   "Intermediate CA",
-		Organization: []string{"Liatrio"},
+	// Parse intermediate template
+	intermediateTmpl, err := parseTemplate(intermediateTemplatePath, rootCert)
+	if err != nil {
+		return fmt.Errorf("error parsing intermediate template: %w", err)
 	}
 
 	intermediateKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
@@ -167,35 +105,8 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error creating intermediate signer: %w", err)
 	}
 
-	// Parse intermediate template
-	intermediateTmpl, err := parseTemplate(intermediateTemplatePath, nil)
-	if err != nil {
-		return fmt.Errorf("error parsing intermediate template: %w", err)
-	}
-
-	// Create intermediate certificate template
-	intermediateTemplate := &x509.Certificate{
-		Subject:               *intermediateSubject,
-		SerialNumber:          big.NewInt(2),
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(100, 0, 0),
-		BasicConstraintsValid: true,
-		IsCA:                  intermediateTmpl.BasicConstraints.IsCA,
-		MaxPathLen:            intermediateTmpl.BasicConstraints.MaxPathLen,
-	}
-
-	// Set key usage
-	for _, usage := range intermediateTmpl.KeyUsage {
-		switch usage {
-		case "certSign":
-			intermediateTemplate.KeyUsage |= x509.KeyUsageCertSign
-		case "crlSign":
-			intermediateTemplate.KeyUsage |= x509.KeyUsageCRLSign
-		}
-	}
-
 	// Create intermediate certificate
-	intermediateCert, err := x509util.CreateCertificate(intermediateTemplate, rootTemplate, intermediateSigner.Public(), rootSigner)
+	intermediateCert, err := x509util.CreateCertificate(intermediateTmpl, rootCert, intermediateSigner.Public(), rootSigner)
 	if err != nil {
 		return fmt.Errorf("error creating intermediate certificate: %w", err)
 	}
@@ -208,9 +119,23 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error writing intermediate certificate: %w", err)
 	}
 
+	// Verify certificate chain
+	pool := x509.NewCertPool()
+	pool.AddCert(rootCert)
+	if _, err := intermediateCert.Verify(x509.VerifyOptions{
+		Roots: pool,
+	}); err != nil {
+		return fmt.Errorf("CA.Intermediate.Verify() error = %v", err)
+	}
+
 	logger.Info("Certificates created successfully",
 		zap.String("root_cert", rootCert.Subject.CommonName),
-		zap.String("intermediate_cert", intermediateCert.Subject.CommonName))
+		zap.String("intermediate_cert", intermediateCert.Subject.CommonName),
+		zap.Bool("root_is_ca", rootCert.IsCA),
+		zap.Bool("intermediate_is_ca", intermediateCert.IsCA),
+		zap.Int("root_path_len", rootCert.MaxPathLen),
+		zap.String("key_usage", fmt.Sprintf("%v", rootCert.KeyUsage)),
+		zap.String("ext_key_usage", fmt.Sprintf("%v", rootCert.ExtKeyUsage)))
 
 	return nil
 }
@@ -234,14 +159,129 @@ func writeCertificateToFile(cert *x509.Certificate, filename string) error {
 	return nil
 }
 
+type CertificateTemplate struct {
+	Subject struct {
+		CommonName string `json:"commonName"`
+	} `json:"subject"`
+	Issuer struct {
+		CommonName string `json:"commonName"`
+	} `json:"issuer"`
+	KeyUsage         []string `json:"keyUsage"`
+	ExtKeyUsage      []string `json:"extKeyUsage,omitempty"`
+	BasicConstraints struct {
+		IsCA       bool `json:"isCA"`
+		MaxPathLen int  `json:"maxPathLen"`
+	} `json:"basicConstraints"`
+	Extensions []struct {
+		ID       string `json:"id"`
+		Critical bool   `json:"critical"`
+		Value    string `json:"value"`
+	} `json:"extensions,omitempty"`
+}
+
+// parseTemplate creates an x509 certificate from JSON template
+func parseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate, error) {
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("error reading template file: %w", err)
+	}
+
+	var tmpl CertificateTemplate
+	if err := json.Unmarshal(content, &tmpl); err != nil {
+		return nil, fmt.Errorf("error parsing template JSON: %w", err)
+	}
+
+	cert := &x509.Certificate{
+		Subject: pkix.Name{
+			CommonName: tmpl.Subject.CommonName,
+		},
+		Issuer: func() pkix.Name {
+			if parent != nil {
+				return parent.Subject
+			}
+			return pkix.Name{CommonName: tmpl.Issuer.CommonName}
+		}(),
+		SerialNumber:          big.NewInt(time.Now().Unix()),
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		BasicConstraintsValid: true,
+		IsCA:                  tmpl.BasicConstraints.IsCA,
+	}
+
+	// Only set MaxPathLen for CA certificates
+	if tmpl.BasicConstraints.IsCA {
+		cert.MaxPathLen = tmpl.BasicConstraints.MaxPathLen
+		cert.MaxPathLenZero = tmpl.BasicConstraints.MaxPathLen == 0
+	}
+
+	// Set key usages from template
+	for _, usage := range tmpl.KeyUsage {
+		switch usage {
+		case "certSign":
+			cert.KeyUsage |= x509.KeyUsageCertSign
+		case "crlSign":
+			cert.KeyUsage |= x509.KeyUsageCRLSign
+		case "digitalSignature":
+			cert.KeyUsage |= x509.KeyUsageDigitalSignature
+		}
+	}
+
+	// Set extended key usages from template
+	for _, usage := range tmpl.ExtKeyUsage {
+		switch usage {
+		case "timeStamping":
+			cert.ExtKeyUsage = append(cert.ExtKeyUsage, x509.ExtKeyUsageTimeStamping)
+		case "codeSign":
+			cert.ExtKeyUsage = append(cert.ExtKeyUsage, x509.ExtKeyUsageCodeSigning)
+		}
+	}
+
+	return cert, nil
+}
+
+type Config struct {
+	KMS struct {
+		Region   string `json:"region"`
+		KeyAlias string `json:"keyAlias"`
+	} `json:"kms"`
+	Certificates struct {
+		ValidityYears int    `json:"validityYears"`
+		RootPath      string `json:"rootPath"`
+		IntermPath    string `json:"intermediatePath"`
+	} `json:"certificates"`
+}
+
 func main() {
+	rootTemplate := "root-template.json"
+	intermediateTemplate := "intermediate-template.json"
+
+	if len(os.Args) > 1 {
+		rootTemplate = os.Args[1]
+	}
+	if len(os.Args) > 2 {
+		intermediateTemplate = os.Args[2]
+	}
+
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		region = "us-east-1"
+	}
+	keyAlias := os.Getenv("AWS_KMS_KEY_ALIAS")
+	if keyAlias == "" {
+		keyAlias = "alias/fulcio-key"
+	}
+
 	ctx := context.Background()
-	km, err := initKMS(ctx, "us-east-1", "alias/fulcio-key")
+	km, err := initKMS(ctx, region, keyAlias)
 	if err != nil {
 		logger.Fatal("Failed to initialize KMS", zap.Error(err))
 	}
 
-	if err := createCertificates(km, "root-template.json", "intermediate-template.json"); err != nil {
+	logger.Info("Creating certificates using templates",
+		zap.String("root_template", rootTemplate),
+		zap.String("intermediate_template", intermediateTemplate))
+
+	if err := createCertificates(km, rootTemplate, intermediateTemplate); err != nil {
 		logger.Fatal("Failed to create certificates", zap.Error(err))
 	}
 }
