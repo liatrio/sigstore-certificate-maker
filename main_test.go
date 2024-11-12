@@ -19,6 +19,7 @@ import (
 	"go.step.sm/crypto/x509util"
 )
 
+// mockKMS provides an in-memory KMS for testing
 type mockKMS struct {
 	keys    map[string]*ecdsa.PrivateKey
 	signers map[string]crypto.Signer
@@ -64,6 +65,7 @@ func (m *mockKMS) Close() error {
 	return nil
 }
 
+// TestParseTemplate tests JSON template parsing
 func TestParseTemplate(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "cert-template-*.json")
 	require.NoError(t, err)
@@ -96,6 +98,7 @@ func TestParseTemplate(t *testing.T) {
 	assert.Equal(t, 0, tmpl.MaxPathLen)
 }
 
+// TestCreateCertificates tests certificate chain creation
 func TestCreateCertificates(t *testing.T) {
 	t.Run("Fulcio", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "cert-test-fulcio-*")
@@ -201,6 +204,7 @@ func TestCreateCertificates(t *testing.T) {
 	})
 }
 
+// TestWriteCertificateToFile tests PEM file writing
 func TestWriteCertificateToFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "cert-write-test-*")
 	require.NoError(t, err)
@@ -243,6 +247,7 @@ func TestWriteCertificateToFile(t *testing.T) {
 	assert.Equal(t, "Test Cert", parsedCert.Subject.CommonName)
 }
 
+// testCertificateCreation creates and verifies certificate chains
 func testCertificateCreation(t *testing.T, tmpDir, rootContent, intermediateContent string) {
 	rootTmplPath := filepath.Join(tmpDir, "root-template.json")
 	intermediateTmplPath := filepath.Join(tmpDir, "intermediate-template.json")

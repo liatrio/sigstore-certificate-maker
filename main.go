@@ -1,3 +1,4 @@
+// Package main provides certificate creation utilities for Sigstore services
 package main
 
 import (
@@ -53,14 +54,15 @@ func initKMS(ctx context.Context, region, keyID string) (apiv1.KeyManager, error
 	return awskms.New(ctx, opts)
 }
 
+// createCertificates generates a certificate chain using AWS KMS
 func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTemplatePath string) error {
-	// Parse root template
+	// Parse templates
 	rootTmpl, err := parseTemplate(rootTemplatePath, nil)
 	if err != nil {
 		return fmt.Errorf("error parsing root template: %w", err)
 	}
 
-	// Create root key and signer
+	// Generate root key pair
 	rootKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
 		Name:               "root-key",
 		SignatureAlgorithm: apiv1.ECDSAWithSHA256,
@@ -117,7 +119,7 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error writing intermediate certificate: %w", err)
 	}
 
-	// Verify intermediate
+	// Verify certificate chain
 	pool := x509.NewCertPool()
 	pool.AddCert(rootCert)
 	if _, err := intermediateCert.Verify(x509.VerifyOptions{
@@ -177,6 +179,7 @@ type CertificateTemplate struct {
 	} `json:"extensions,omitempty"`
 }
 
+// parseTemplate creates an x509 certificate from JSON template
 func parseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate, error) {
 	content, err := os.ReadFile(filename)
 	if err != nil {
