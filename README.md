@@ -11,15 +11,114 @@ This tool creates root and intermediate certificates for:
 
 ## Requirements
 
-- AWS KMS access
+- Access to one of the supported KMS providers (AWS, Google Cloud, Azure)
 - Go 1.21 or higher
+
+## Installation
+
+```bash
+go install github.com/liatrio/sigstore-certificate-maker@latest
+```
+
+## Local Development
+
+Clone and build the project locally:
+
+```bash
+# Clone the repository
+git clone https://github.com/liatrio/sigstore-certificate-maker.git
+
+# Change to project directory
+cd sigstore-certificate-maker
+
+# Build the binary
+go build -o sigstore-certificate-maker
+
+# Run locally
+./sigstore-certificate-maker create
+```
+
+For development, you can also use:
+
+```bash
+# Run directly with Go
+go run main.go create
+
+# Run tests
+go test ./...
+```
 
 ## Usage
 
+The tool can be configured using either command-line flags or environment variables.
+
+### Command-Line Interface
+
+```shell
+# Create certificates using default settings
+sigstore-certificate-maker create
+
+# Specify KMS provider and settings
+sigstore-certificate-maker create \
+  --kms-type cloudkms \
+  --kms-key-id projects/my-project/locations/global/keyRings/my-ring/cryptoKeys/my-key \
+  --kms-credentials-file /path/to/credentials.json
+
+# Specify custom template paths
+sigstore-certificate-maker create \
+  --root-template path/to/root.json \
+  --intermediate-template path/to/intermediate.json
+```
+
+Available flags:
+
+- `--kms-type`: KMS provider type (awskms, cloudkms, azurekms)
+- `--kms-region`: KMS region (required for AWS KMS)
+- `--kms-key-id`: Key identifier
+- `--kms-vault-name`: Azure KMS vault name
+- `--kms-tenant-id`: Azure KMS tenant ID
+- `--kms-credentials-file`: Path to credentials file (for Google Cloud KMS)
+- `--root-template`: Path to root certificate template
+- `--intermediate-template`: Path to intermediate certificate template
+
 ### Environment Variables
 
-- `AWS_REGION`: AWS region (default: us-east-1)
-- `AWS_KMS_KEY_ALIAS`: KMS key alias (default: alias/fulcio-key)
+- `KMS_TYPE`: KMS provider type ("awskms", "cloudkms", "azurekms")
+- `KMS_REGION`: Region (required for AWS KMS, defaults to us-east-1)
+- `KMS_KEY_ID`: Key identifier
+  - AWS: Key alias (default: alias/fulcio-key)
+  - Google Cloud: Full resource name (projects/_/locations/_/keyRings/_/cryptoKeys/_)
+  - Azure: Key name
+- `KMS_OPTIONS`: Provider-specific options
+  - Google Cloud: credentials-file
+  - Azure: vault-name, tenant-id
+
+### Provider-Specific Configuration Examples
+
+#### AWS KMS
+
+```shell
+export KMS_TYPE=awskms
+export KMS_REGION=us-east-1
+export KMS_KEY_ID=alias/fulcio-key
+```
+
+#### Google Cloud KMS
+
+```shell
+export KMS_TYPE=cloudkms
+export KMS_KEY_ID=projects/my-project/locations/global/keyRings/my-ring/cryptoKeys/my-key
+export KMS_OPTIONS_CREDENTIALS_FILE=/path/to/credentials.json
+```
+
+#### Azure KMS
+
+```shell
+export KMS_TYPE=azurekms
+export KMS_KEY_ID=my-key
+export KMS_OPTIONS_VAULT_NAME=my-vault
+export KMS_OPTIONS_TENANT_ID=tenant-id
+```
 
 ### Templates
 
@@ -141,13 +240,26 @@ Certificate:
 
 ## Running the Tool
 
-```shell
-# Using default template paths
-go run main.go
+```bash
+# Basic usage with default settings
+sigstore-certificate-maker create
 
-# Using custom template paths
-go run main.go path/to/root.json path/to/intermediate.json
+# Using AWS KMS with custom templates
+sigstore-certificate-maker create \
+  --kms-type awskms \
+  --kms-region us-east-1 \
+  --kms-key-id alias/fulcio-key \
+  --root-template path/to/root.json \
+  --intermediate-template path/to/intermediate.json
 ```
+
+### Configuration Precedence
+
+The tool uses the following precedence order for configuration:
+
+1. Command-line flags (highest priority)
+2. Environment variables
+3. Default values (lowest priority)
 
 ## References
 
