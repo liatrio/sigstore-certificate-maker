@@ -1,4 +1,4 @@
-module github.com/liatrio/go-template/internal/tools
+module github.com/liatrio/sigstore-certificate-maker/internal/tools
 
 go 1.23
 

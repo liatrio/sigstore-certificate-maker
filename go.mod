@@ -1,4 +1,4 @@
-module github.com/liatrio/go-template
+module github.com/liatrio/sigstore-certificate-maker/internal/tools
 
 go 1.23.2
 
