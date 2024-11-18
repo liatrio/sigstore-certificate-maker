@@ -47,6 +47,6 @@ require (
 )
 
 require (
-	go.step.sm/crypto v0.54.0
+	go.step.sm/crypto v0.54.2
 	go.uber.org/multierr v1.11.0 // indirect
 )
