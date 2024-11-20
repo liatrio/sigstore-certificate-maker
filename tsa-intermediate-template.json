@@ -18,12 +18,10 @@
     "notAfter": "2034-01-01T00:00:00Z",
     "serialNumber": 2,
     "basicConstraints": {
-        "isCA": true,
+        "isCA": false,
         "maxPathLen": 0
     },
     "keyUsage": [
-        "certSign",
-        "crlSign",
         "digitalSignature"
     ],
     "extensions": [
