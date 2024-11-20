@@ -1,4 +1,4 @@
-// Package main provides certificate creation utilities for Sigstore services
+// Package main provides certificate creation utilities for Fulcio and Timestamp Authority
 package main
 
 import (
@@ -25,11 +25,13 @@ import (
 var (
 	logger *zap.Logger
 
+	version = "dev"
+
 	rootCmd = &cobra.Command{
-		Use:   "sigstore-certificate-maker",
-		Short: "Create certificate chains for Sigstore services",
-		Long: `A tool for creating root and intermediate certificates 
-			   for Sigstore services (Fulcio and Timestamp Authority)`,
+		Use:     "sigstore-certificate-maker",
+		Short:   "Create certificate chains for Sigstore services",
+		Long:    `A tool for creating root and intermediate certificates for Fulcio and Timestamp Authority`,
+		Version: version,
 	}
 
 	createCmd = &cobra.Command{
@@ -65,19 +67,15 @@ var (
 )
 
 func init() {
-	var cfg zap.Config
-	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
-		panic(err)
-	}
-	logger = zap.Must(cfg.Build())
+	logger = initLogger()
 
 	// Add create command
 	rootCmd.AddCommand(createCmd)
 
 	// Add flags to create command
-	createCmd.Flags().StringVar(&kmsType, "kms-type", "awskms", "KMS provider type (awskms, cloudkms, azurekms)")
-	createCmd.Flags().StringVar(&kmsRegion, "kms-region", "us-east-1", "KMS region")
-	createCmd.Flags().StringVar(&kmsKeyID, "kms-key-id", "alias/fulcio-key", "KMS key identifier")
+	createCmd.Flags().StringVar(&kmsType, "kms-type", "", "KMS provider type (awskms, cloudkms, azurekms)")
+	createCmd.Flags().StringVar(&kmsRegion, "kms-region", "", "KMS region")
+	createCmd.Flags().StringVar(&kmsKeyID, "kms-key-id", "", "KMS key identifier")
 	createCmd.Flags().StringVar(&kmsVaultName, "kms-vault-name", "", "Azure KMS vault name")
 	createCmd.Flags().StringVar(&kmsTenantID, "kms-tenant-id", "", "Azure KMS tenant ID")
 	createCmd.Flags().StringVar(&kmsCredsFile, "kms-credentials-file", "", "Path to credentials file (for Google Cloud KMS)")
@@ -88,23 +86,23 @@ func init() {
 func runCreate(cmd *cobra.Command, args []string) error {
 	// Build KMS config from flags and environment
 	kmsConfig := KMSConfig{
-		Type:    getConfigValue(kmsType, "KMS_TYPE", "awskms"),
-		Region:  getConfigValue(kmsRegion, "KMS_REGION", "us-east-1"),
-		KeyID:   getConfigValue(kmsKeyID, "KMS_KEY_ID", "alias/fulcio-key"),
+		Type:    getConfigValue(kmsType, "KMS_TYPE"),
+		Region:  getConfigValue(kmsRegion, "KMS_REGION"),
+		KeyID:   getConfigValue(kmsKeyID, "KMS_KEY_ID"),
 		Options: make(map[string]string),
 	}
 
 	// Handle provider-specific options
 	switch kmsConfig.Type {
 	case "cloudkms":
-		if credsFile := getConfigValue(kmsCredsFile, "KMS_CREDENTIALS_FILE", ""); credsFile != "" {
+		if credsFile := getConfigValue(kmsCredsFile, "KMS_CREDENTIALS_FILE"); credsFile != "" {
 			kmsConfig.Options["credentials-file"] = credsFile
 		}
 	case "azurekms":
-		if vaultName := getConfigValue(kmsVaultName, "KMS_VAULT_NAME", ""); vaultName != "" {
+		if vaultName := getConfigValue(kmsVaultName, "KMS_VAULT_NAME"); vaultName != "" {
 			kmsConfig.Options["vault-name"] = vaultName
 		}
-		if tenantID := getConfigValue(kmsTenantID, "KMS_TENANT_ID", ""); tenantID != "" {
+		if tenantID := getConfigValue(kmsTenantID, "KMS_TENANT_ID"); tenantID != "" {
 			kmsConfig.Options["tenant-id"] = tenantID
 		}
 	}
@@ -425,12 +423,17 @@ func validateKMSConfig(config KMSConfig) error {
 	return nil
 }
 
-func getConfigValue(flagValue, envVar, defaultValue string) string {
+func getConfigValue(flagValue, envVar string) string {
 	if flagValue != "" {
 		return flagValue
 	}
-	if envValue := os.Getenv(envVar); envValue != "" {
-		return envValue
+	return os.Getenv(envVar)
+}
+
+func initLogger() *zap.Logger {
+	var cfg zap.Config
+	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
+		panic(err)
 	}
-	return defaultValue
+	return zap.Must(cfg.Build())
 }
