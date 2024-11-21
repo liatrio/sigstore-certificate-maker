@@ -148,10 +148,11 @@ func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
 		}
 		return cloudkms.New(ctx, opts)
 	case "azurekms":
-		opts.URI = fmt.Sprintf("azurekms:///%s?vault-name=%s&tenant-id=%s",
-			config.KeyID,
-			config.Options["vault-name"],
-			config.Options["tenant-id"])
+		opts.URI = fmt.Sprintf("azurekms://%s.vault.azure.net/keys/%s",
+			config.Options["vault-name"], config.KeyID)
+		if config.Options["tenant-id"] != "" {
+			opts.URI += fmt.Sprintf("?tenant-id=%s", config.Options["tenant-id"])
+		}
 		return azurekms.New(ctx, opts)
 	default:
 		return nil, fmt.Errorf("unsupported KMS type: %s", config.Type)
@@ -166,9 +167,14 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error parsing root template: %w", err)
 	}
 
-	// Generate root key pair
+	rootKeyName := "sigstore-key"
+	if kmsType == "azurekms" {
+		rootKeyName = fmt.Sprintf("azurekms:vault=%s;name=%s",
+			kmsVaultName, rootKeyName)
+	}
+
 	rootKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
-		Name:               "root-key",
+		Name:               rootKeyName,
 		SignatureAlgorithm: apiv1.ECDSAWithSHA256,
 	})
 	if err != nil {
@@ -194,8 +200,14 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error parsing intermediate template: %w", err)
 	}
 
+	intermediateKeyName := "sigstore-key-intermediate"
+	if kmsType == "azurekms" {
+		intermediateKeyName = fmt.Sprintf("azurekms:vault=%s;name=%s",
+			kmsVaultName, intermediateKeyName)
+	}
+
 	intermediateKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
-		Name:               "intermediate-key",
+		Name:               intermediateKeyName,
 		SignatureAlgorithm: apiv1.ECDSAWithSHA256,
 	})
 	if err != nil {
