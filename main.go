@@ -46,6 +46,10 @@ var (
 	kmsCredsFile       string
 	rootTemplatePath   string
 	intermTemplatePath string
+	rootKeyID          string
+	intermediateKeyID  string
+	rootCertPath       string
+	intermCertPath     string
 
 	rawJSON = []byte(`{
 		"level": "debug",
@@ -78,15 +82,20 @@ func init() {
 	createCmd.Flags().StringVar(&kmsCredsFile, "kms-credentials-file", "", "Path to credentials file (for Google Cloud KMS)")
 	createCmd.Flags().StringVar(&rootTemplatePath, "root-template", "root-template.json", "Path to root certificate template")
 	createCmd.Flags().StringVar(&intermTemplatePath, "intermediate-template", "intermediate-template.json", "Path to intermediate certificate template")
+	createCmd.Flags().StringVar(&rootKeyID, "root-key-id", "", "KMS key identifier for root certificate")
+	createCmd.Flags().StringVar(&intermediateKeyID, "intermediate-key-id", "", "KMS key identifier for intermediate certificate")
+	createCmd.Flags().StringVar(&rootCertPath, "root-cert", "root.pem", "Output path for root certificate")
+	createCmd.Flags().StringVar(&intermCertPath, "intermediate-cert", "intermediate.pem", "Output path for intermediate certificate")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
 	// Build KMS config from flags and environment
 	kmsConfig := KMSConfig{
-		Type:    getConfigValue(kmsType, "KMS_TYPE"),
-		Region:  getConfigValue(kmsRegion, "KMS_REGION"),
-		KeyID:   getConfigValue(kmsKeyID, "KMS_KEY_ID"),
-		Options: make(map[string]string),
+		Type:              getConfigValue(kmsType, "KMS_TYPE"),
+		Region:            getConfigValue(kmsRegion, "KMS_REGION"),
+		RootKeyID:         getConfigValue(rootKeyID, "KMS_ROOT_KEY_ID"),
+		IntermediateKeyID: getConfigValue(intermediateKeyID, "KMS_INTERMEDIATE_KEY_ID"),
+		Options:           make(map[string]string),
 	}
 
 	// Handle provider-specific options
@@ -118,7 +127,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("intermediate template error: %w", err)
 	}
 
-	return createCertificates(km, rootTemplatePath, intermTemplatePath)
+	return createCertificates(km, kmsConfig, rootTemplatePath, intermTemplatePath, rootCertPath, intermCertPath)
 }
 
 func main() {
@@ -137,19 +146,25 @@ func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
 		URI:  "",
 	}
 
+	// Use RootKeyID as the primary key ID, fall back to IntermediateKeyID if root is not set
+	keyID := config.RootKeyID
+	if keyID == "" {
+		keyID = config.IntermediateKeyID
+	}
+
 	switch config.Type {
 	case "awskms":
-		opts.URI = fmt.Sprintf("awskms:///%s?region=%s", config.KeyID, config.Region)
+		opts.URI = fmt.Sprintf("awskms:///%s?region=%s", keyID, config.Region)
 		return awskms.New(ctx, opts)
 	case "cloudkms":
-		opts.URI = fmt.Sprintf("cloudkms:%s", config.KeyID)
+		opts.URI = fmt.Sprintf("cloudkms:%s", keyID)
 		if credFile, ok := config.Options["credentials-file"]; ok {
 			opts.URI += fmt.Sprintf("?credentials-file=%s", credFile)
 		}
 		return cloudkms.New(ctx, opts)
 	case "azurekms":
 		opts.URI = fmt.Sprintf("azurekms://%s.vault.azure.net/keys/%s",
-			config.Options["vault-name"], config.KeyID)
+			config.Options["vault-name"], keyID)
 		if config.Options["tenant-id"] != "" {
 			opts.URI += fmt.Sprintf("?tenant-id=%s", config.Options["tenant-id"])
 		}
@@ -160,29 +175,21 @@ func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
 }
 
 // createCertificates generates a certificate chain using the configured KMS provider
-func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTemplatePath string) error {
+func createCertificates(km apiv1.KeyManager, config KMSConfig, rootTemplatePath, intermediateTemplatePath, rootCertPath, intermediateCertPath string) error {
 	// Parse templates
 	rootTmpl, err := ParseTemplate(rootTemplatePath, nil)
 	if err != nil {
 		return fmt.Errorf("error parsing root template: %w", err)
 	}
 
-	rootKeyName := "sigstore-key"
-	if kmsType == "azurekms" {
+	rootKeyName := config.RootKeyID
+	if config.Type == "azurekms" {
 		rootKeyName = fmt.Sprintf("azurekms:vault=%s;name=%s",
-			kmsVaultName, rootKeyName)
-	}
-
-	rootKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
-		Name:               rootKeyName,
-		SignatureAlgorithm: apiv1.ECDSAWithSHA256,
-	})
-	if err != nil {
-		return fmt.Errorf("error creating root key: %w", err)
+			config.Options["vault-name"], config.RootKeyID)
 	}
 
 	rootSigner, err := km.CreateSigner(&apiv1.CreateSignerRequest{
-		SigningKey: rootKey.Name,
+		SigningKey: rootKeyName,
 	})
 	if err != nil {
 		return fmt.Errorf("error creating root signer: %w", err)
@@ -200,22 +207,14 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error parsing intermediate template: %w", err)
 	}
 
-	intermediateKeyName := "sigstore-key-intermediate"
-	if kmsType == "azurekms" {
+	intermediateKeyName := config.IntermediateKeyID
+	if config.Type == "azurekms" {
 		intermediateKeyName = fmt.Sprintf("azurekms:vault=%s;name=%s",
-			kmsVaultName, intermediateKeyName)
-	}
-
-	intermediateKey, err := km.CreateKey(&apiv1.CreateKeyRequest{
-		Name:               intermediateKeyName,
-		SignatureAlgorithm: apiv1.ECDSAWithSHA256,
-	})
-	if err != nil {
-		return fmt.Errorf("error creating intermediate key: %w", err)
+			config.Options["vault-name"], config.IntermediateKeyID)
 	}
 
 	intermediateSigner, err := km.CreateSigner(&apiv1.CreateSignerRequest{
-		SigningKey: intermediateKey.Name,
+		SigningKey: intermediateKeyName,
 	})
 	if err != nil {
 		return fmt.Errorf("error creating intermediate signer: %w", err)
@@ -227,11 +226,11 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 		return fmt.Errorf("error creating intermediate certificate: %w", err)
 	}
 
-	if err := writeCertificateToFile(rootCert, "root.pem"); err != nil {
+	if err := writeCertificateToFile(rootCert, rootCertPath); err != nil {
 		return fmt.Errorf("error writing root certificate: %w", err)
 	}
 
-	if err := writeCertificateToFile(intermediateCert, "intermediate.pem"); err != nil {
+	if err := writeCertificateToFile(intermediateCert, intermCertPath); err != nil {
 		return fmt.Errorf("error writing intermediate certificate: %w", err)
 	}
 
@@ -276,18 +275,19 @@ func writeCertificateToFile(cert *x509.Certificate, filename string) error {
 }
 
 type KMSConfig struct {
-	Type    string            // "awskms", "cloudkms", "azurekms"
-	Region  string            // AWS region or Cloud location
-	KeyID   string            // Key identifier
-	Options map[string]string // Provider-specific options
+	Type              string            // "awskms", "cloudkms", "azurekms"
+	Region            string            // AWS region or Cloud location
+	RootKeyID         string            // Root CA key identifier
+	IntermediateKeyID string            // Intermediate CA key identifier
+	Options           map[string]string // Provider-specific options
 }
 
 func validateKMSConfig(config KMSConfig) error {
 	if config.Type == "" {
 		return fmt.Errorf("KMS type cannot be empty")
 	}
-	if config.KeyID == "" {
-		return fmt.Errorf("KeyID cannot be empty")
+	if config.RootKeyID == "" && config.IntermediateKeyID == "" {
+		return fmt.Errorf("at least one of RootKeyID or IntermediateKeyID must be specified")
 	}
 
 	switch config.Type {
@@ -296,8 +296,11 @@ func validateKMSConfig(config KMSConfig) error {
 			return fmt.Errorf("region is required for AWS KMS")
 		}
 	case "cloudkms":
-		if !strings.HasPrefix(config.KeyID, "projects/") {
-			return fmt.Errorf("cloudkms KeyID must start with 'projects/'")
+		if config.RootKeyID != "" && !strings.HasPrefix(config.RootKeyID, "projects/") {
+			return fmt.Errorf("cloudkms RootKeyID must start with 'projects/'")
+		}
+		if config.IntermediateKeyID != "" && !strings.HasPrefix(config.IntermediateKeyID, "projects/") {
+			return fmt.Errorf("cloudkms IntermediateKeyID must start with 'projects/'")
 		}
 	case "azurekms":
 		if config.Options["vault-name"] == "" {
