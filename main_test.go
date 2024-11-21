@@ -32,8 +32,14 @@ func newMockKMS() *mockKMS {
 	}
 
 	// Pre-create test keys
-	rootKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	intermediateKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(fmt.Errorf("failed to generate root key: %v", err))
+	}
+	intermediateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(fmt.Errorf("failed to generate intermediate key: %v", err))
+	}
 
 	m.keys["root-key"] = rootKey
 	m.keys["intermediate-key"] = intermediateKey
