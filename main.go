@@ -111,11 +111,11 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Validate template paths
-	if _, err := os.Stat(rootTemplatePath); err != nil {
-		return fmt.Errorf("root template not found at %s: %w", rootTemplatePath, err)
+	if err := validateTemplatePath(rootTemplatePath); err != nil {
+		return fmt.Errorf("root template error: %w", err)
 	}
-	if _, err := os.Stat(intermTemplatePath); err != nil {
-		return fmt.Errorf("intermediate template not found at %s: %w", intermTemplatePath, err)
+	if err := validateTemplatePath(intermTemplatePath); err != nil {
+		return fmt.Errorf("intermediate template error: %w", err)
 	}
 
 	return createCertificates(km, rootTemplatePath, intermTemplatePath)
@@ -158,10 +158,10 @@ func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
 	}
 }
 
-// createCertificates generates a certificate chain using AWS KMS
+// createCertificates generates a certificate chain using the configured KMS provider
 func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTemplatePath string) error {
 	// Parse templates
-	rootTmpl, err := parseTemplate(rootTemplatePath, nil)
+	rootTmpl, err := ParseTemplate(rootTemplatePath, nil)
 	if err != nil {
 		return fmt.Errorf("error parsing root template: %w", err)
 	}
@@ -189,7 +189,7 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 	}
 
 	// Parse intermediate template
-	intermediateTmpl, err := parseTemplate(intermediateTemplatePath, rootCert)
+	intermediateTmpl, err := ParseTemplate(intermediateTemplatePath, rootCert)
 	if err != nil {
 		return fmt.Errorf("error parsing intermediate template: %w", err)
 	}
@@ -263,20 +263,6 @@ func writeCertificateToFile(cert *x509.Certificate, filename string) error {
 	return nil
 }
 
-type Config struct {
-	KMS struct {
-		Type    string            `json:"type"`
-		Region  string            `json:"region"`
-		KeyID   string            `json:"keyId"`
-		Options map[string]string `json:"options,omitempty"`
-	} `json:"kms"`
-	Certificates struct {
-		ValidityYears int    `json:"validityYears"`
-		RootPath      string `json:"rootPath"`
-		IntermPath    string `json:"intermediatePath"`
-	} `json:"certificates"`
-}
-
 type KMSConfig struct {
 	Type    string            // "awskms", "cloudkms", "azurekms"
 	Region  string            // AWS region or Cloud location
@@ -326,4 +312,26 @@ func initLogger() *zap.Logger {
 		panic(err)
 	}
 	return zap.Must(cfg.Build())
+}
+
+func validateTemplatePath(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("template not found at %s: %w", path, err)
+	}
+
+	if !strings.HasSuffix(path, ".json") {
+		return fmt.Errorf("template file must have .json extension: %s", path)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("error reading template file: %w", err)
+	}
+
+	var js json.RawMessage
+	if err := json.Unmarshal(content, &js); err != nil {
+		return fmt.Errorf("invalid JSON in template file: %w", err)
+	}
+
+	return nil
 }

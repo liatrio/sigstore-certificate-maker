@@ -91,7 +91,7 @@ func TestParseTemplate(t *testing.T) {
 	err = os.WriteFile(tmpFile.Name(), []byte(templateContent), 0600)
 	require.NoError(t, err)
 
-	tmpl, err := parseTemplate(tmpFile.Name(), nil)
+	tmpl, err := ParseTemplate(tmpFile.Name(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Test CA", tmpl.Subject.CommonName)
 	assert.True(t, tmpl.IsCA)

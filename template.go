@@ -14,11 +14,16 @@ import (
 
 type CertificateTemplate struct {
 	Subject struct {
-		CommonName string `json:"commonName"`
+		Country            []string `json:"country,omitempty"`
+		Organization       []string `json:"organization,omitempty"`
+		OrganizationalUnit []string `json:"organizationalUnit,omitempty"`
+		CommonName         string   `json:"commonName"`
 	} `json:"subject"`
 	Issuer struct {
 		CommonName string `json:"commonName"`
 	} `json:"issuer"`
+	NotBefore        string   `json:"notBefore"`
+	NotAfter         string   `json:"notAfter"`
 	KeyUsage         []string `json:"keyUsage"`
 	ExtKeyUsage      []string `json:"extKeyUsage,omitempty"`
 	BasicConstraints struct {
@@ -32,8 +37,8 @@ type CertificateTemplate struct {
 	} `json:"extensions,omitempty"`
 }
 
-// parseTemplate creates an x509 certificate from JSON template
-func parseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate, error) {
+// ParseTemplate creates an x509 certificate from JSON template
+func ParseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate, error) {
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("error reading template file: %w", err)
@@ -44,14 +49,14 @@ func parseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate
 		return nil, fmt.Errorf("error parsing template JSON: %w", err)
 	}
 
-	if err := validateTemplate(&tmpl, parent); err != nil {
+	if err := ValidateTemplate(&tmpl, parent); err != nil {
 		return nil, err
 	}
 
-	return createCertificateFromTemplate(&tmpl, parent)
+	return CreateCertificateFromTemplate(&tmpl, parent)
 }
 
-func validateTemplate(tmpl *CertificateTemplate, parent *x509.Certificate) error {
+func ValidateTemplate(tmpl *CertificateTemplate, parent *x509.Certificate) error {
 	if tmpl.Subject.CommonName == "" {
 		return fmt.Errorf("template subject.commonName cannot be empty")
 	}
@@ -80,10 +85,23 @@ func validateTemplate(tmpl *CertificateTemplate, parent *x509.Certificate) error
 	return nil
 }
 
-func createCertificateFromTemplate(tmpl *CertificateTemplate, parent *x509.Certificate) (*x509.Certificate, error) {
+func CreateCertificateFromTemplate(tmpl *CertificateTemplate, parent *x509.Certificate) (*x509.Certificate, error) {
+	notBefore, err := time.Parse(time.RFC3339, tmpl.NotBefore)
+	if err != nil {
+		return nil, fmt.Errorf("invalid notBefore time format: %w", err)
+	}
+
+	notAfter, err := time.Parse(time.RFC3339, tmpl.NotAfter)
+	if err != nil {
+		return nil, fmt.Errorf("invalid notAfter time format: %w", err)
+	}
+
 	cert := &x509.Certificate{
 		Subject: pkix.Name{
-			CommonName: tmpl.Subject.CommonName,
+			Country:            tmpl.Subject.Country,
+			Organization:       tmpl.Subject.Organization,
+			OrganizationalUnit: tmpl.Subject.OrganizationalUnit,
+			CommonName:         tmpl.Subject.CommonName,
 		},
 		Issuer: func() pkix.Name {
 			if parent != nil {
@@ -92,8 +110,8 @@ func createCertificateFromTemplate(tmpl *CertificateTemplate, parent *x509.Certi
 			return pkix.Name{CommonName: tmpl.Issuer.CommonName}
 		}(),
 		SerialNumber:          big.NewInt(time.Now().Unix()),
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
 		BasicConstraintsValid: true,
 		IsCA:                  tmpl.BasicConstraints.IsCA,
 	}
@@ -103,13 +121,13 @@ func createCertificateFromTemplate(tmpl *CertificateTemplate, parent *x509.Certi
 		cert.MaxPathLenZero = tmpl.BasicConstraints.MaxPathLen == 0
 	}
 
-	setKeyUsages(cert, tmpl.KeyUsage)
-	setExtKeyUsages(cert, tmpl.ExtKeyUsage)
+	SetKeyUsages(cert, tmpl.KeyUsage)
+	SetExtKeyUsages(cert, tmpl.ExtKeyUsage)
 
 	return cert, nil
 }
 
-func setKeyUsages(cert *x509.Certificate, usages []string) {
+func SetKeyUsages(cert *x509.Certificate, usages []string) {
 	for _, usage := range usages {
 		switch usage {
 		case "certSign":
@@ -122,7 +140,7 @@ func setKeyUsages(cert *x509.Certificate, usages []string) {
 	}
 }
 
-func setExtKeyUsages(cert *x509.Certificate, usages []string) {
+func SetExtKeyUsages(cert *x509.Certificate, usages []string) {
 	for _, usage := range usages {
 		switch usage {
 		case "timeStamping":
