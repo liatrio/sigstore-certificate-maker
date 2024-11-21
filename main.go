@@ -1,29 +1,53 @@
-// Package main provides certificate creation utilities for Sigstore services
+// Package main provides certificate creation utilities for Fulcio and Timestamp Authority
 package main
 
 import (
 	"context"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"os"
-	"time"
+	"strings"
 
+	"github.com/spf13/cobra"
 	"go.step.sm/crypto/kms/apiv1"
 	"go.step.sm/crypto/kms/awskms"
+	"go.step.sm/crypto/kms/azurekms"
+	"go.step.sm/crypto/kms/cloudkms"
 	"go.step.sm/crypto/x509util"
 	"go.uber.org/zap"
 )
 
 var (
 	logger *zap.Logger
-)
 
-func init() {
-	rawJSON := []byte(`{
+	version = "dev"
+
+	rootCmd = &cobra.Command{
+		Use:     "sigstore-certificate-maker",
+		Short:   "Create certificate chains for Sigstore services",
+		Long:    `A tool for creating root and intermediate certificates for Fulcio and Timestamp Authority`,
+		Version: version,
+	}
+
+	createCmd = &cobra.Command{
+		Use:   "create",
+		Short: "Create certificate chain",
+		RunE:  runCreate,
+	}
+
+	// Flag variables
+	kmsType            string
+	kmsRegion          string
+	kmsKeyID           string
+	kmsVaultName       string
+	kmsTenantID        string
+	kmsCredsFile       string
+	rootTemplatePath   string
+	intermTemplatePath string
+
+	rawJSON = []byte(`{
 		"level": "debug",
 		"encoding": "json",
 		"outputPaths": ["stdout"],
@@ -37,27 +61,107 @@ func init() {
 			"timeEncoder": "iso8601"
 		}
 	}`)
+)
 
-	var cfg zap.Config
-	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
-		panic(err)
-	}
+func init() {
+	logger = initLogger()
 
-	logger = zap.Must(cfg.Build())
+	// Add create command
+	rootCmd.AddCommand(createCmd)
+
+	// Add flags to create command
+	createCmd.Flags().StringVar(&kmsType, "kms-type", "", "KMS provider type (awskms, cloudkms, azurekms)")
+	createCmd.Flags().StringVar(&kmsRegion, "kms-region", "", "KMS region")
+	createCmd.Flags().StringVar(&kmsKeyID, "kms-key-id", "", "KMS key identifier")
+	createCmd.Flags().StringVar(&kmsVaultName, "kms-vault-name", "", "Azure KMS vault name")
+	createCmd.Flags().StringVar(&kmsTenantID, "kms-tenant-id", "", "Azure KMS tenant ID")
+	createCmd.Flags().StringVar(&kmsCredsFile, "kms-credentials-file", "", "Path to credentials file (for Google Cloud KMS)")
+	createCmd.Flags().StringVar(&rootTemplatePath, "root-template", "root-template.json", "Path to root certificate template")
+	createCmd.Flags().StringVar(&intermTemplatePath, "intermediate-template", "intermediate-template.json", "Path to intermediate certificate template")
 }
 
-func initKMS(ctx context.Context, region, keyID string) (apiv1.KeyManager, error) {
+func runCreate(cmd *cobra.Command, args []string) error {
+	// Build KMS config from flags and environment
+	kmsConfig := KMSConfig{
+		Type:    getConfigValue(kmsType, "KMS_TYPE"),
+		Region:  getConfigValue(kmsRegion, "KMS_REGION"),
+		KeyID:   getConfigValue(kmsKeyID, "KMS_KEY_ID"),
+		Options: make(map[string]string),
+	}
+
+	// Handle provider-specific options
+	switch kmsConfig.Type {
+	case "cloudkms":
+		if credsFile := getConfigValue(kmsCredsFile, "KMS_CREDENTIALS_FILE"); credsFile != "" {
+			kmsConfig.Options["credentials-file"] = credsFile
+		}
+	case "azurekms":
+		if vaultName := getConfigValue(kmsVaultName, "KMS_VAULT_NAME"); vaultName != "" {
+			kmsConfig.Options["vault-name"] = vaultName
+		}
+		if tenantID := getConfigValue(kmsTenantID, "KMS_TENANT_ID"); tenantID != "" {
+			kmsConfig.Options["tenant-id"] = tenantID
+		}
+	}
+
+	ctx := context.Background()
+	km, err := initKMS(ctx, kmsConfig)
+	if err != nil {
+		return fmt.Errorf("failed to initialize KMS: %w", err)
+	}
+
+	// Validate template paths
+	if err := validateTemplatePath(rootTemplatePath); err != nil {
+		return fmt.Errorf("root template error: %w", err)
+	}
+	if err := validateTemplatePath(intermTemplatePath); err != nil {
+		return fmt.Errorf("intermediate template error: %w", err)
+	}
+
+	return createCertificates(km, rootTemplatePath, intermTemplatePath)
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		logger.Fatal("Command failed", zap.Error(err))
+	}
+}
+
+func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
+	if err := validateKMSConfig(config); err != nil {
+		return nil, fmt.Errorf("invalid KMS configuration: %w", err)
+	}
+
 	opts := apiv1.Options{
-		Type: "awskms",
-		URI:  fmt.Sprintf("awskms:///%s?region=%s", keyID, region),
+		Type: apiv1.Type(config.Type),
+		URI:  "",
 	}
-	return awskms.New(ctx, opts)
+
+	switch config.Type {
+	case "awskms":
+		opts.URI = fmt.Sprintf("awskms:///%s?region=%s", config.KeyID, config.Region)
+		return awskms.New(ctx, opts)
+	case "cloudkms":
+		opts.URI = fmt.Sprintf("cloudkms:%s", config.KeyID)
+		if credFile, ok := config.Options["credentials-file"]; ok {
+			opts.URI += fmt.Sprintf("?credentials-file=%s", credFile)
+		}
+		return cloudkms.New(ctx, opts)
+	case "azurekms":
+		opts.URI = fmt.Sprintf("azurekms:///%s?vault-name=%s&tenant-id=%s",
+			config.KeyID,
+			config.Options["vault-name"],
+			config.Options["tenant-id"])
+		return azurekms.New(ctx, opts)
+	default:
+		return nil, fmt.Errorf("unsupported KMS type: %s", config.Type)
+	}
 }
 
-// createCertificates generates a certificate chain using AWS KMS
+// createCertificates generates a certificate chain using the configured KMS provider
 func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTemplatePath string) error {
 	// Parse templates
-	rootTmpl, err := parseTemplate(rootTemplatePath, nil)
+	rootTmpl, err := ParseTemplate(rootTemplatePath, nil)
 	if err != nil {
 		return fmt.Errorf("error parsing root template: %w", err)
 	}
@@ -85,7 +189,7 @@ func createCertificates(km apiv1.KeyManager, rootTemplatePath, intermediateTempl
 	}
 
 	// Parse intermediate template
-	intermediateTmpl, err := parseTemplate(intermediateTemplatePath, rootCert)
+	intermediateTmpl, err := ParseTemplate(intermediateTemplatePath, rootCert)
 	if err != nil {
 		return fmt.Errorf("error parsing intermediate template: %w", err)
 	}
@@ -159,129 +263,75 @@ func writeCertificateToFile(cert *x509.Certificate, filename string) error {
 	return nil
 }
 
-type CertificateTemplate struct {
-	Subject struct {
-		CommonName string `json:"commonName"`
-	} `json:"subject"`
-	Issuer struct {
-		CommonName string `json:"commonName"`
-	} `json:"issuer"`
-	KeyUsage         []string `json:"keyUsage"`
-	ExtKeyUsage      []string `json:"extKeyUsage,omitempty"`
-	BasicConstraints struct {
-		IsCA       bool `json:"isCA"`
-		MaxPathLen int  `json:"maxPathLen"`
-	} `json:"basicConstraints"`
-	Extensions []struct {
-		ID       string `json:"id"`
-		Critical bool   `json:"critical"`
-		Value    string `json:"value"`
-	} `json:"extensions,omitempty"`
+type KMSConfig struct {
+	Type    string            // "awskms", "cloudkms", "azurekms"
+	Region  string            // AWS region or Cloud location
+	KeyID   string            // Key identifier
+	Options map[string]string // Provider-specific options
 }
 
-// parseTemplate creates an x509 certificate from JSON template
-func parseTemplate(filename string, parent *x509.Certificate) (*x509.Certificate, error) {
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("error reading template file: %w", err)
+func validateKMSConfig(config KMSConfig) error {
+	if config.Type == "" {
+		return fmt.Errorf("KMS type cannot be empty")
+	}
+	if config.KeyID == "" {
+		return fmt.Errorf("KeyID cannot be empty")
 	}
 
-	var tmpl CertificateTemplate
-	if err := json.Unmarshal(content, &tmpl); err != nil {
-		return nil, fmt.Errorf("error parsing template JSON: %w", err)
-	}
-
-	cert := &x509.Certificate{
-		Subject: pkix.Name{
-			CommonName: tmpl.Subject.CommonName,
-		},
-		Issuer: func() pkix.Name {
-			if parent != nil {
-				return parent.Subject
-			}
-			return pkix.Name{CommonName: tmpl.Issuer.CommonName}
-		}(),
-		SerialNumber:          big.NewInt(time.Now().Unix()),
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
-		BasicConstraintsValid: true,
-		IsCA:                  tmpl.BasicConstraints.IsCA,
-	}
-
-	// Only set MaxPathLen for CA certificates
-	if tmpl.BasicConstraints.IsCA {
-		cert.MaxPathLen = tmpl.BasicConstraints.MaxPathLen
-		cert.MaxPathLenZero = tmpl.BasicConstraints.MaxPathLen == 0
-	}
-
-	// Set key usages from template
-	for _, usage := range tmpl.KeyUsage {
-		switch usage {
-		case "certSign":
-			cert.KeyUsage |= x509.KeyUsageCertSign
-		case "crlSign":
-			cert.KeyUsage |= x509.KeyUsageCRLSign
-		case "digitalSignature":
-			cert.KeyUsage |= x509.KeyUsageDigitalSignature
+	switch config.Type {
+	case "awskms":
+		if config.Region == "" {
+			return fmt.Errorf("region is required for AWS KMS")
+		}
+	case "cloudkms":
+		if !strings.HasPrefix(config.KeyID, "projects/") {
+			return fmt.Errorf("cloudkms KeyID must start with 'projects/'")
+		}
+	case "azurekms":
+		if config.Options["vault-name"] == "" {
+			return fmt.Errorf("vault-name is required for Azure KMS")
+		}
+		if config.Options["tenant-id"] == "" {
+			return fmt.Errorf("tenant-id is required for Azure KMS")
 		}
 	}
 
-	// Set extended key usages from template
-	for _, usage := range tmpl.ExtKeyUsage {
-		switch usage {
-		case "timeStamping":
-			cert.ExtKeyUsage = append(cert.ExtKeyUsage, x509.ExtKeyUsageTimeStamping)
-		case "codeSign":
-			cert.ExtKeyUsage = append(cert.ExtKeyUsage, x509.ExtKeyUsageCodeSigning)
-		}
-	}
-
-	return cert, nil
+	return nil
 }
 
-type Config struct {
-	KMS struct {
-		Region   string `json:"region"`
-		KeyAlias string `json:"keyAlias"`
-	} `json:"kms"`
-	Certificates struct {
-		ValidityYears int    `json:"validityYears"`
-		RootPath      string `json:"rootPath"`
-		IntermPath    string `json:"intermediatePath"`
-	} `json:"certificates"`
+func getConfigValue(flagValue, envVar string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return os.Getenv(envVar)
 }
 
-func main() {
-	rootTemplate := "root-template.json"
-	intermediateTemplate := "intermediate-template.json"
+func initLogger() *zap.Logger {
+	var cfg zap.Config
+	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
+		panic(err)
+	}
+	return zap.Must(cfg.Build())
+}
 
-	if len(os.Args) > 1 {
-		rootTemplate = os.Args[1]
-	}
-	if len(os.Args) > 2 {
-		intermediateTemplate = os.Args[2]
-	}
-
-	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = "us-east-1"
-	}
-	keyAlias := os.Getenv("AWS_KMS_KEY_ALIAS")
-	if keyAlias == "" {
-		keyAlias = "alias/fulcio-key"
+func validateTemplatePath(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("template not found at %s: %w", path, err)
 	}
 
-	ctx := context.Background()
-	km, err := initKMS(ctx, region, keyAlias)
+	if !strings.HasSuffix(path, ".json") {
+		return fmt.Errorf("template file must have .json extension: %s", path)
+	}
+
+	content, err := os.ReadFile(path)
 	if err != nil {
-		logger.Fatal("Failed to initialize KMS", zap.Error(err))
+		return fmt.Errorf("error reading template file: %w", err)
 	}
 
-	logger.Info("Creating certificates using templates",
-		zap.String("root_template", rootTemplate),
-		zap.String("intermediate_template", intermediateTemplate))
-
-	if err := createCertificates(km, rootTemplate, intermediateTemplate); err != nil {
-		logger.Fatal("Failed to create certificates", zap.Error(err))
+	var js json.RawMessage
+	if err := json.Unmarshal(content, &js); err != nil {
+		return fmt.Errorf("invalid JSON in template file: %w", err)
 	}
+
+	return nil
 }
