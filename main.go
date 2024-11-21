@@ -35,9 +35,8 @@ import (
 )
 
 var (
-	logger *zap.Logger
-
-	version = "dev"
+	logger  *zap.Logger
+	version string
 
 	rootCmd = &cobra.Command{
 		Use:     "sigstore-certificate-maker",

@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - v*
+    branches: main
 
 jobs:
   release:
@@ -14,14 +15,33 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5
         with:
           go-version: '1.23'
-      - name: Build and release
+          cache: true
+
+      - name: Run go-semantic-release
+        uses: go-semantic-release/action@48d83acd958dae62e73701aad20a5b5844a3bf45 # v1.23.0
+        id: semrel
+        with:
+          github-token: ${{ github.token }}
+          changelog-generator-opt: emojis=true
+          allow-initial-development-versions: true
+
+      - name: Build and package
+        if: steps.semrel.outputs.version != ''
         run: |
-          go build -o sigstore-certificate-maker
+          echo "Creating release version v${steps.semrel.outputs.version}"
+          go test -v .
+          go build -ldflags "-X main.version=v${steps.semrel.outputs.version}" -o sigstore-certificate-maker
           tar czf sigstore-certificate-maker.tar.gz sigstore-certificate-maker
+
       - name: Create Release
+        if: steps.semrel.outputs.version != ''
         uses: softprops/action-gh-release@e7a8f85e1c67a31e6ed99a94b41bd0b71bbee6b8 # v2
         with:
           files: sigstore-certificate-maker.tar.gz
+          tag_name: v${{ steps.semrel.outputs.version }}
+          generate_release_notes: true

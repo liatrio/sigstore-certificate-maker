@@ -296,3 +296,5 @@ sigstore-certificate-maker create \
   --root-template tsa-root-template.json \
   --intermediate-template tsa-intermediate-template.json
 ```
+
+[![Build and Test](https://github.com/{owner}/{repo}/actions/workflows/build.yml/badge.svg)](https://github.com/{owner}/{repo}/actions/workflows/build.yml)
