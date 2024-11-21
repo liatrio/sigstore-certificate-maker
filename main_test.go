@@ -85,7 +85,9 @@ func TestParseTemplate(t *testing.T) {
 		"basicConstraints": {
 			"isCA": true,
 			"maxPathLen": 0
-		}
+		},
+		"notBefore": "2024-01-01T00:00:00Z",
+		"notAfter": "2025-01-01T00:00:00Z"
 	}`
 
 	err = os.WriteFile(tmpFile.Name(), []byte(templateContent), 0600)
@@ -123,7 +125,9 @@ func TestCreateCertificates(t *testing.T) {
 			"basicConstraints": {
 				"isCA": true,
 				"maxPathLen": 0
-			}
+			},
+			"notBefore": "2024-01-01T00:00:00Z",
+			"notAfter": "2025-01-01T00:00:00Z"
 		}`
 
 		// Fulcio intermediate template
@@ -144,7 +148,9 @@ func TestCreateCertificates(t *testing.T) {
 			"basicConstraints": {
 				"isCA": true,
 				"maxPathLen": 0
-			}
+			},
+			"notBefore": "2024-01-01T00:00:00Z",
+			"notAfter": "2025-01-01T00:00:00Z"
 		}`
 
 		testCertificateCreation(t, tmpDir, rootContent, intermediateContent)
@@ -173,7 +179,9 @@ func TestCreateCertificates(t *testing.T) {
 			"basicConstraints": {
 				"isCA": true,
 				"maxPathLen": 0
-			}
+			},
+			"notBefore": "2024-01-01T00:00:00Z",
+			"notAfter": "2025-01-01T00:00:00Z"
 		}`
 
 		// TSA intermediate template
@@ -197,7 +205,9 @@ func TestCreateCertificates(t *testing.T) {
 					"critical": true,
 					"value": "asn1Seq (asn1Enc oid:1.3.6.1.5.5.7.3.8) | toJson"
 				}
-			]
+			],
+			"notBefore": "2024-01-01T00:00:00Z",
+			"notAfter": "2025-01-01T00:00:00Z"
 		}`
 
 		testCertificateCreation(t, tmpDir, rootContent, intermediateContent)
