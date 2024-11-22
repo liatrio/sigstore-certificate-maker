@@ -13,7 +13,9 @@
 // limitations under the License.
 //
 
-// Package main provides certificate creation utilities for Fulcio and Timestamp Authority
+// Package main implements a certificate creation utility for Sigstore services.
+// It supports creating root and intermediate certificates for both Fulcio and
+// Timestamp Authority using various KMS providers (AWS, GCP, Azure).
 package main
 
 import (
@@ -150,6 +152,7 @@ func main() {
 	}
 }
 
+// initKMS creates and configures a KeyManager based on the provided KMS configuration
 func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
 	if err := validateKMSConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid KMS configuration: %w", err)
@@ -188,8 +191,21 @@ func initKMS(ctx context.Context, config KMSConfig) (apiv1.KeyManager, error) {
 	}
 }
 
-// createCertificates generates a certificate chain using the configured KMS provider
-func createCertificates(km apiv1.KeyManager, config KMSConfig, rootTemplatePath, intermediateTemplatePath, rootCertPath, intermediateCertPath string) error {
+// KMSConfig holds the configuration for a Key Management Service provider.
+// It supports AWS KMS, Google Cloud KMS, and Azure Key Vault.
+type KMSConfig struct {
+	Type              string            // KMS provider type: "awskms", "cloudkms", "azurekms"
+	Region            string            // AWS region or Cloud location
+	RootKeyID         string            // Root CA key identifier
+	IntermediateKeyID string            // Intermediate CA key identifier
+	Options           map[string]string // Provider-specific options
+}
+
+// createCertificates generates a certificate chain using the configured KMS provider.
+// It creates both root and intermediate certificates using the provided templates
+// and KMS signing keys. The certificates are written to the specified output paths
+// and the chain is verified before returning.
+func createCertificates(km apiv1.KeyManager, config KMSConfig, rootTemplatePath, intermediateTemplatePath, rootCertPath, intermCertPath string) error {
 	// Parse templates
 	rootTmpl, err := ParseTemplate(rootTemplatePath, nil)
 	if err != nil {
@@ -269,6 +285,7 @@ func createCertificates(km apiv1.KeyManager, config KMSConfig, rootTemplatePath,
 	return nil
 }
 
+// writeCertificateToFile writes an X.509 certificate to a PEM-encoded file
 func writeCertificateToFile(cert *x509.Certificate, filename string) error {
 	certPEM := &pem.Block{
 		Type:  "CERTIFICATE",
@@ -288,14 +305,7 @@ func writeCertificateToFile(cert *x509.Certificate, filename string) error {
 	return nil
 }
 
-type KMSConfig struct {
-	Type              string            // "awskms", "cloudkms", "azurekms"
-	Region            string            // AWS region or Cloud location
-	RootKeyID         string            // Root CA key identifier
-	IntermediateKeyID string            // Intermediate CA key identifier
-	Options           map[string]string // Provider-specific options
-}
-
+// validateKMSConfig ensures all required KMS configuration parameters are present
 func validateKMSConfig(config KMSConfig) error {
 	if config.Type == "" {
 		return fmt.Errorf("KMS type cannot be empty")
