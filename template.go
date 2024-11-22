@@ -1,5 +1,7 @@
 // Package main provides template parsing and certificate generation functionality
-// for creating X.509 certificates from JSON templates
+// for creating X.509 certificates from JSON templates. It supports both root and
+// intermediate certificate creation with configurable properties including key usage,
+// extended key usage, and basic constraints.
 package main
 
 import (
